@@ -1,3 +1,6 @@
 {
-	"luau-lsp.sourcemap.rojoProjectFile": "plugin.project.json"
+	"luau-lsp.sourcemap.rojoProjectFile": "plugin.project.json",
+	"cSpell.words": [
+		"nodette"
+	]
 }
