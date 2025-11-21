@@ -155,7 +155,7 @@ local plugin_menu_button_prototype = setmetatable({}, plugin_button_prototype) :
 (plugin_menu_button_prototype :: any).__index = plugin_menu_button_prototype
 
 function plugin_menu_button_prototype.add_new_action(plugin_menu_button, id, icon, title)
-	return plugin_menu_button.menu:AddNewAction(id, title or id, icon.Uri :: any)
+	return plugin_menu_button.menu:AddNewAction(id, title or id, if icon then icon.Uri :: any else nil)
 end
 
 function plugin_menu_button_prototype.add_action(
@@ -247,6 +247,53 @@ function plugtilly.create_dock_widget_plugin_gui(
 	gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 	gui.ResetOnSpawn = false
 	return gui
+end
+
+--[[
+	Wrapper around Plugin:GetSetting() and Plugin:SetSetting(),
+	that gives single function that when called it'll give you the current setting value,
+	and calling it with an argument will also set the setting.
+]]
+function plugtilly.place_setting<V>(plugin: Plugin, key: string, default: V): Setting<V>
+	-- don't save for places that have no place id
+	if game.PlaceId == 0 then
+		local value = default
+
+		return function(...)
+			if select("#", ...) ~= 0 then
+				value = select(1, ...)
+			end
+
+			return value
+		end
+	end
+
+	local setting_values = plugin:GetSetting(key) :: { [string]: V }
+	local string_place_id = tostring(game.PlaceId)
+
+	if setting_values then
+		if setting_values[string_place_id] == nil then
+			setting_values[string_place_id] = default
+			plugin:SetSetting(key, setting_values)
+		end
+	else
+		plugin:SetSetting(key, {
+			[string_place_id] = default
+		})
+	end
+
+	return function(...)
+		if select("#", ...) ~= 0 then
+			-- the or is here incase someone edits the json file studio keeps for plugin settings
+			local value_per_place = (plugin:GetSetting(key) or {}) :: { [string]: V }
+			local value = select(1, ...)
+			value_per_place[string_place_id] = value
+			plugin:SetSetting(key, value_per_place)
+			return value
+		end
+
+		return plugin:GetSetting(key)[string_place_id]
+	end
 end
 
 --[[
