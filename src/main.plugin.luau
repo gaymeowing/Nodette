@@ -189,7 +189,6 @@ do -- select web
 		action.Triggered:Connect(function()
 			ON_WEB_SELECTED(folder)
 			Selection:Set({ folder })
-			SHOULD_RECOMPUTE_WEBS_MENU = true
 		end)
 	end
 
