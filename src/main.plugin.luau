@@ -42,11 +42,13 @@ local SELECT_WEB_MENU: PluginMenu
 
 local SHOW_NODES_EXPLICITLY_ENABLED = plugtilly.place_setting(plugin, "ShowNodesEnabled", false)
 local LAST_SELECTED_WEB_TAG = `__NODETTE_LAST_SELECTED_WEB USER({StudioService:GetUserId()})`
+local NODE_PART_TO_HANDLES = {} :: { [BasePart]: { HandleAdornment }}
 local LOADED_WEBS = {} :: { [string]: Folder | { Folder } }
 local MOUSE_TRACKING_CONNECTION: RBXScriptConnection
 local SHOULD_RECOMPUTE_WEBS_MENU = false
 local DEFAULT_WEB_FOLDER_NAME = "Nodes"
-local MOUSE_TRACKING_OBJECT: GuiObject
+local MOUSE_TRACKING_OBJECT: GuiButton
+local CAMERA = Workspace.CurrentCamera
 local CREATE_HUB_NODE_ENABLED = false
 local CREATE_NODE_ENABLED = false
 local SHOW_NODES_ENABLED = false
@@ -54,6 +56,21 @@ local CURRENT_WEB_FOLDER: Folder
 local WEB_TAG = "__NODETTE_WEB"
 local MOUSE_X = 0
 local MOUSE_Y = 0
+
+local function SNAP_POSITION_TO_GRID(position: vector, grid_size: number): vector
+	local divided_position = position / grid_size
+
+	return vector.create(
+		math.round(divided_position.x),
+		math.round(divided_position.y),
+		math.round(divided_position.z)
+	) * grid_size
+end
+
+local function CAST_MOUSE_IN_WORLD(params: RaycastParams?)
+	local ray = CAMERA:ScreenPointToRay(MOUSE_X, MOUSE_Y)
+	return Workspace:Raycast(ray.Origin, ray.Direction * 15_000, params)
+end
 
 local function RESIZE_LINE_HANDLE(line: BoxHandleAdornment, start: vector, finish: vector)
 	line.Size = vector.create(0.4, 0.4, vector.magnitude(start - finish))
@@ -127,6 +144,10 @@ local function TRACK_MOUSE()
 	end
 end
 
+local function ENABLE_SHOW_NODES()
+
+end
+
 CREATE_HUB_NODE.Click:Connect(function()
 	if CREATE_HUB_NODE_ENABLED then
 		CREATE_HUB_NODE_ENABLED = false
@@ -150,11 +171,14 @@ CREATE_HUB_NODE.Click:Connect(function()
 	CREATE_HUB_NODE:SetActive(CREATE_HUB_NODE_ENABLED)
 end)
 
+local mouse_click_connection: RBXScriptConnection
+
 CREATE_NODE.Click:Connect(function()
 	if CREATE_NODE_ENABLED then
 		CREATE_NODE_ENABLED = false
 		SHOW_NODES_ENABLED = false
 		UNTRACK_MOUSE()
+		mouse_click_connection:Disconnect()
 
 		if not SHOW_NODES_EXPLICITLY_ENABLED() then
 			SHOW_NODES:SetActive(false)
@@ -163,6 +187,46 @@ CREATE_NODE.Click:Connect(function()
 		CREATE_HUB_NODE_ENABLED = false
 		CREATE_NODE_ENABLED = true
 		SHOW_NODES_ENABLED = true
+
+		mouse_click_connection = MOUSE_TRACKING_OBJECT.MouseButton1Click:Connect(function(input)
+			local input = {}
+			if not CURRENT_WEB_FOLDER then
+				return
+			end
+			--if plugin:GetSelectedRibbonTool() ~= Enum.RibbonTool.None or #Selection:Get() ~= 0 then
+			--	return
+			--end
+			local result = CAST_MOUSE_IN_WORLD()
+			warn(result)
+
+			if not result then
+				return
+			end
+			if input.KeyCode == Enum.KeyCode.MouseRightButton then
+				if not result.Instance then
+					return
+				end
+
+				if result.Instance.Parent == CURRENT_WEB_FOLDER then
+					result.Instance:Destroy()
+				end
+
+				return
+			end
+
+
+
+			local node = Instance.new("Part")
+			--node.Transparency = 1
+			node.Anchored = true
+			node.Name = "Node"
+			node.TopSurface = Enum.SurfaceType.Smooth
+			node.BottomSurface = Enum.SurfaceType.Smooth
+			node.Size = vector.one
+			node.Position = SNAP_POSITION_TO_GRID(result.Position, StudioService.GridSize)
+			node.Parent = CURRENT_WEB_FOLDER
+			warn("made node")
+		end)
 
 		CREATE_HUB_NODE:SetActive(false)
 		SHOW_NODES:SetActive(true)
@@ -272,6 +336,11 @@ do
 		return true
 	end
 
+	local function update_grid_size_vector()
+		local new_grid_size = StudioService.GridSize
+		GRID_SIZE_VECTOR = vector.create(new_grid_size, 1, new_grid_size)
+	end
+
 	CollectionService:GetInstanceAddedSignal(LAST_SELECTED_WEB_TAG):Connect(on_last_selected_web_added)
 	CollectionService:GetInstanceAddedSignal(WEB_TAG):Connect(function(instance)
 		local success = on_web_added(instance)
@@ -298,13 +367,21 @@ do
 	screen_gui.Name = plugtilly.name(plugin)
 	screen_gui.Parent = CoreGui
 
-	MOUSE_TRACKING_OBJECT = Instance.new("Frame")
+	MOUSE_TRACKING_OBJECT = Instance.new("ImageButton")
 	MOUSE_TRACKING_OBJECT.Name = "MouseTrackingGuiObject"
 	MOUSE_TRACKING_OBJECT.Size = UDim2.fromScale(1, 1)
+	MOUSE_TRACKING_OBJECT.Image = ""
 	MOUSE_TRACKING_OBJECT.Transparency = 1
 	MOUSE_TRACKING_OBJECT.Active = false
 	MOUSE_TRACKING_OBJECT.Parent = screen_gui
+	MOUSE_TRACKING_OBJECT.ZIndex = -math.huge
 
+	update_grid_size_vector()
+
+	StudioService:GetPropertyChangedSignal("GridSize"):Connect(update_grid_size_vector)
+	Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+		CAMERA = Workspace.CurrentCamera
+	end)
 	plugin.Unloading:Connect(function()
 		screen_gui:Destroy()
 	end)
