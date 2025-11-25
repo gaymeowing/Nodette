@@ -6,6 +6,7 @@ local RunService = game:GetService("RunService")
 local Selection = game:GetService("Selection")
 local Workspace = game:GetService("Workspace")
 local CoreGui = game:GetService("CoreGui")
+local is_interacting_with_ribbon_tools = require("./packages/is_interacting_with_ribbon_tools")
 local plugtilly = require("./packages/plugtilly")
 
 local TOOLBAR = plugin:CreateToolbar(plugtilly.name(plugin))
@@ -47,7 +48,7 @@ local LOADED_WEBS = {} :: { [string]: Folder | { Folder } }
 local MOUSE_TRACKING_CONNECTION: RBXScriptConnection
 local SHOULD_RECOMPUTE_WEBS_MENU = false
 local DEFAULT_WEB_FOLDER_NAME = "Nodes"
-local MOUSE_TRACKING_OBJECT: GuiButton
+local MOUSE_TRACKING_OBJECT: GuiObject
 local CAMERA = Workspace.CurrentCamera
 local CREATE_HUB_NODE_ENABLED = false
 local CREATE_NODE_ENABLED = false
@@ -188,8 +189,11 @@ CREATE_NODE.Click:Connect(function()
 		CREATE_NODE_ENABLED = true
 		SHOW_NODES_ENABLED = true
 
-		mouse_click_connection = MOUSE_TRACKING_OBJECT.MouseButton1Click:Connect(function(input)
-			local input = {}
+		mouse_click_connection = MOUSE_TRACKING_OBJECT:GetPropertyChangedSignal("GuiState"):Connect(function(input)
+			if MOUSE_TRACKING_OBJECT.GuiState ~= Enum.GuiState.Press then
+				return
+			end
+
 			if not CURRENT_WEB_FOLDER then
 				return
 			end
@@ -336,11 +340,6 @@ do
 		return true
 	end
 
-	local function update_grid_size_vector()
-		local new_grid_size = StudioService.GridSize
-		GRID_SIZE_VECTOR = vector.create(new_grid_size, 1, new_grid_size)
-	end
-
 	CollectionService:GetInstanceAddedSignal(LAST_SELECTED_WEB_TAG):Connect(on_last_selected_web_added)
 	CollectionService:GetInstanceAddedSignal(WEB_TAG):Connect(function(instance)
 		local success = on_web_added(instance)
@@ -364,25 +363,25 @@ do
 	SHOULD_RECOMPUTE_WEBS_MENU = true
 
 	local screen_gui = Instance.new("ScreenGui")
+	screen_gui.DisplayOrder = -math.huge
+	screen_gui.ZIndexBehavior = Enum.ZIndexBehavior.Global
 	screen_gui.Name = plugtilly.name(plugin)
 	screen_gui.Parent = CoreGui
 
-	MOUSE_TRACKING_OBJECT = Instance.new("ImageButton")
+	MOUSE_TRACKING_OBJECT = Instance.new("Frame")
 	MOUSE_TRACKING_OBJECT.Name = "MouseTrackingGuiObject"
 	MOUSE_TRACKING_OBJECT.Size = UDim2.fromScale(1, 1)
-	MOUSE_TRACKING_OBJECT.Image = ""
 	MOUSE_TRACKING_OBJECT.Transparency = 1
 	MOUSE_TRACKING_OBJECT.Active = false
 	MOUSE_TRACKING_OBJECT.Parent = screen_gui
 	MOUSE_TRACKING_OBJECT.ZIndex = -math.huge
 
-	update_grid_size_vector()
-
-	StudioService:GetPropertyChangedSignal("GridSize"):Connect(update_grid_size_vector)
 	Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
 		CAMERA = Workspace.CurrentCamera
 	end)
 	plugin.Unloading:Connect(function()
 		screen_gui:Destroy()
 	end)
+
+	is_interacting_with_ribbon_tools(plugin)
 end
