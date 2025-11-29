@@ -1,24 +1,26 @@
 
-local ChangeHistoryService = game:GetService("ChangeHistoryService")
+local PluginDebugService = game:GetService("PluginDebugService")
 local CollectionService = game:GetService("CollectionService")
 local StudioService = game:GetService("StudioService")
 local RunService = game:GetService("RunService")
 local Selection = game:GetService("Selection")
 local Workspace = game:GetService("Workspace")
-local CoreGui = game:GetService("CoreGui")
 local is_interacting_with_ribbon_tools = require("./packages/is_interacting_with_ribbon_tools")
+local is_move_ribbon_tool = require("./packages/is_move_ribbon_tool")
+local plugin_mouse_tracker = require("./packages/plugin_mouse_tracker")
 local plugtilly = require("./packages/plugtilly")
 
+local SHOW_NODES_EXPLICITLY_ENABLED = plugtilly.place_setting(plugin, "ShowNodesEnabled", false)
 local TOOLBAR = plugin:CreateToolbar(plugtilly.name(plugin))
 local SELECT_WEB_ICON = Content.fromAssetId(78705581677742)
 local CREATE_WEB_ID = "Create Web Folder"
 local SELECT_WEB_ID = "Select Web"
-local CREATE_NODE = plugtilly.create_toolbar_button(plugin, TOOLBAR, {
+local CREATE_NODE = plugtilly.create_toolbar_toggle_button(plugin, TOOLBAR, {
 	id = "Create Node",
 	tooltip = "Creates a new node",
 	icon = Content.fromAssetId(78705581677742),
 })
-local CREATE_HUB_NODE = plugtilly.create_toolbar_button(plugin, TOOLBAR, {
+local CREATE_HUB_NODE = plugtilly.create_toolbar_toggle_button(plugin, TOOLBAR, {
 	id = "Create Hub Node",
 	tooltip = "Creates a new multi-node",
 	icon = Content.fromAssetId(78705581677742),
@@ -28,49 +30,52 @@ local SELECT_WEB = plugtilly.create_toolbar_button(plugin, TOOLBAR, {
 	tooltip = "Opens a menu to select the node web to be edited",
 	icon = SELECT_WEB_ICON,
 })
-local SHOW_NODES = plugtilly.create_toolbar_button(plugin, TOOLBAR, {
+local SHOW_NODES = plugtilly.create_toolbar_toggle_button(plugin, TOOLBAR, {
 	id = "Show Nodes",
 	tooltip = "Shows node map visuals",
 	icon = Content.fromAssetId(78705581677742),
+	toggled = SHOW_NODES_EXPLICITLY_ENABLED(),
 })
 local CREATE_WEB_FOLDER = plugin:CreatePluginAction(
-	CREATE_WEB_ID, CREATE_WEB_ID,
+	CREATE_WEB_ID,
+	CREATE_WEB_ID,
 	"Creates a new Node Web Folder parented to Workspace and selects it",
 	Content.fromAssetId(78705581677742).Uri,
 	true
 )
 local SELECT_WEB_MENU: PluginMenu
 
-local SHOW_NODES_EXPLICITLY_ENABLED = plugtilly.place_setting(plugin, "ShowNodesEnabled", false)
 local LAST_SELECTED_WEB_TAG = `__NODETTE_LAST_SELECTED_WEB USER({StudioService:GetUserId()})`
-local NODE_PART_TO_HANDLES = {} :: { [BasePart]: { HandleAdornment }}
+local NODE_PART_TO_HANDLES = {} :: { [BasePart]: { HandleAdornment } }
 local LOADED_WEBS = {} :: { [string]: Folder | { Folder } }
-local MOUSE_TRACKING_CONNECTION: RBXScriptConnection
+local IS_DEBUGGING = plugin.Parent == PluginDebugService
+local ON_CLICK_CONNECTION: RBXScriptConnection
 local SHOULD_RECOMPUTE_WEBS_MENU = false
 local DEFAULT_WEB_FOLDER_NAME = "Nodes"
-local MOUSE_TRACKING_OBJECT: GuiObject
-local CAMERA = Workspace.CurrentCamera
-local CREATE_HUB_NODE_ENABLED = false
-local CREATE_NODE_ENABLED = false
-local SHOW_NODES_ENABLED = false
 local CURRENT_WEB_FOLDER: Folder
 local WEB_TAG = "__NODETTE_WEB"
-local MOUSE_X = 0
-local MOUSE_Y = 0
 
-local function SNAP_POSITION_TO_GRID(position: vector, grid_size: number): vector
-	local divided_position = position / grid_size
+local function CREATE_NODE_PART(cframe: CFrame): BasePart
+	local node = Instance.new("Part")
 
-	return vector.create(
-		math.round(divided_position.x),
-		math.round(divided_position.y),
-		math.round(divided_position.z)
-	) * grid_size
+	if not IS_DEBUGGING then
+		node.Transparency = 1
+	end
+
+	node.BottomSurface = Enum.SurfaceType.Smooth
+	node.TopSurface = Enum.SurfaceType.Smooth
+	node.Size = vector.one :: any
+	node.CFrame = cframe
+	node.Anchored = true
+	node.Name = "Node"
+	node.Parent = CURRENT_WEB_FOLDER
+	return node
 end
 
-local function CAST_MOUSE_IN_WORLD(params: RaycastParams?)
-	local ray = CAMERA:ScreenPointToRay(MOUSE_X, MOUSE_Y)
-	return Workspace:Raycast(ray.Origin, ray.Direction * 15_000, params)
+local function SNAP_POSITION_TO_GRID(position: vector, grid_size: number): vector
+	local divided_position = position // grid_size
+
+	return (divided_position * grid_size) + vector.create(0.5, 0.5, 0.5)
 end
 
 local function RESIZE_LINE_HANDLE(line: BoxHandleAdornment, start: vector, finish: vector)
@@ -129,125 +134,81 @@ local function ON_WEB_SELECTED(folder: Folder)
 end
 
 local function UNTRACK_MOUSE()
-	if not (CREATE_HUB_NODE_ENABLED and CREATE_NODE_ENABLED) then
-		MOUSE_TRACKING_CONNECTION:Disconnect()
-		MOUSE_TRACKING_CONNECTION = nil :: any
+	if plugin_mouse_tracker.is_tracking_position() and not (CREATE_HUB_NODE.toggled and CREATE_NODE.toggled) then
+		plugin_mouse_tracker.untrack_position()
 	end
 end
 
 local function TRACK_MOUSE()
-	if not MOUSE_TRACKING_CONNECTION then
-		MOUSE_TRACKING_CONNECTION = MOUSE_TRACKING_OBJECT.MouseMoved:Connect(function(x, y)
-			print(x, y)
-			MOUSE_X = x
-			MOUSE_Y = y
-		end)
+	if not plugin_mouse_tracker.is_tracking_position() then
+		plugin_mouse_tracker.track_position(plugin)
 	end
 end
 
-local function ENABLE_SHOW_NODES()
+local function on_node_creator_clicked(button: plugtilly.PluginToggleButton, f: () -> ())
+	local other_button = if button == CREATE_NODE then CREATE_HUB_NODE else CREATE_NODE
 
+	button:on_toggle(function(toggled)
+		if toggled then
+			if other_button.toggled then
+				other_button:toggle(false)
+			end
+
+			-- activating and reactivating to disable anything besides the move ribbon tools from also being selected
+			local selected_ribbon_tool = plugin:GetSelectedRibbonTool()
+			plugin:Activate(true)
+			plugin:Deactivate()
+
+			if is_move_ribbon_tool(selected_ribbon_tool) then
+				plugin:SelectRibbonTool(selected_ribbon_tool, UDim2.new())
+			end
+
+			ON_CLICK_CONNECTION = plugin_mouse_tracker.on_click(f)
+			TRACK_MOUSE()
+		else
+			if not SHOW_NODES_EXPLICITLY_ENABLED() then
+				SHOW_NODES:toggle(false)
+			end
+
+			ON_CLICK_CONNECTION:Disconnect()
+			UNTRACK_MOUSE()
+		end
+	end)
 end
 
-CREATE_HUB_NODE.Click:Connect(function()
-	if CREATE_HUB_NODE_ENABLED then
-		CREATE_HUB_NODE_ENABLED = false
-		SHOW_NODES_ENABLED = false
-		UNTRACK_MOUSE()
-
-		if not SHOW_NODES_EXPLICITLY_ENABLED() then
-			SHOW_NODES:SetActive(false)
-			-- do cleanup stuff here
-		end
-	else
-		CREATE_HUB_NODE_ENABLED = true
-		CREATE_NODE_ENABLED = false
-		SHOW_NODES_ENABLED = true
-
-		CREATE_NODE:SetActive(false)
-		SHOW_NODES:SetActive(true)
-		TRACK_MOUSE()
-	end
-
-	CREATE_HUB_NODE:SetActive(CREATE_HUB_NODE_ENABLED)
+on_node_creator_clicked(CREATE_HUB_NODE, function()
+	-- aaa
 end)
 
-local mouse_click_connection: RBXScriptConnection
+on_node_creator_clicked(CREATE_NODE, function()
+	if not CURRENT_WEB_FOLDER then
+		warn("[NODETTE]: Cannot create nodes without a Web Folder selected")
+		return
+	end
+	local result = plugin_mouse_tracker.cast_into_world()
 
-CREATE_NODE.Click:Connect(function()
-	if CREATE_NODE_ENABLED then
-		CREATE_NODE_ENABLED = false
-		SHOW_NODES_ENABLED = false
-		UNTRACK_MOUSE()
-		mouse_click_connection:Disconnect()
-
-		if not SHOW_NODES_EXPLICITLY_ENABLED() then
-			SHOW_NODES:SetActive(false)
-		end
-	else
-		CREATE_HUB_NODE_ENABLED = false
-		CREATE_NODE_ENABLED = true
-		SHOW_NODES_ENABLED = true
-
-		mouse_click_connection = MOUSE_TRACKING_OBJECT:GetPropertyChangedSignal("GuiState"):Connect(function(input)
-			if MOUSE_TRACKING_OBJECT.GuiState ~= Enum.GuiState.Press then
-				return
-			end
-
-			if not CURRENT_WEB_FOLDER then
-				return
-			end
-			--if plugin:GetSelectedRibbonTool() ~= Enum.RibbonTool.None or #Selection:Get() ~= 0 then
-			--	return
-			--end
-			local result = CAST_MOUSE_IN_WORLD()
-			warn(result)
-
-			if not result then
-				return
-			end
-			if input.KeyCode == Enum.KeyCode.MouseRightButton then
-				if not result.Instance then
-					return
-				end
-
-				if result.Instance.Parent == CURRENT_WEB_FOLDER then
-					result.Instance:Destroy()
-				end
-
-				return
-			end
-
-
-
-			local node = Instance.new("Part")
-			--node.Transparency = 1
-			node.Anchored = true
-			node.Name = "Node"
-			node.TopSurface = Enum.SurfaceType.Smooth
-			node.BottomSurface = Enum.SurfaceType.Smooth
-			node.Size = vector.one
-			node.Position = SNAP_POSITION_TO_GRID(result.Position, StudioService.GridSize)
-			node.Parent = CURRENT_WEB_FOLDER
-			warn("made node")
-		end)
-
-		CREATE_HUB_NODE:SetActive(false)
-		SHOW_NODES:SetActive(true)
-		TRACK_MOUSE()
+	if not result then
+		return
 	end
 
-	CREATE_NODE:SetActive(CREATE_NODE_ENABLED)
+	if is_interacting_with_ribbon_tools(plugin) then
+		return
+	end
+	local result_instance = result.Instance
+
+	if table.find(Selection:Get(), result_instance) then
+		return
+	end
+
+	local stop_recording = plugtilly.create_recording(plugin, "Create Node")
+	CREATE_NODE_PART(CFrame.new(SNAP_POSITION_TO_GRID(result.Position :: any, StudioService.GridSize) :: any))
+	stop_recording(Enum.FinishRecordingOperation.Commit)
 end)
 
-SHOW_NODES.Click:Connect(function()
-	if SHOW_NODES_EXPLICITLY_ENABLED() then
-		SHOW_NODES_EXPLICITLY_ENABLED(false)
-	else
-		SHOW_NODES_EXPLICITLY_ENABLED(true)
+SHOW_NODES:on_toggle(function(toggled, is_from_click)
+	if is_from_click then
+		SHOW_NODES_EXPLICITLY_ENABLED(toggled)
 	end
-
-	SHOW_NODES:SetActive(SHOW_NODES_EXPLICITLY_ENABLED())
 end)
 
 do -- select web
@@ -298,17 +259,20 @@ do -- select web
 end
 
 CREATE_WEB_FOLDER.Triggered:Connect(function()
+	local stop_recording = plugtilly.create_recording(plugin, "Create Web Folder")
 	local folder = Instance.new("Folder")
 	folder.Name = DEFAULT_WEB_FOLDER_NAME
 	folder:AddTag(WEB_TAG)
 	folder.Parent = Workspace
-	ChangeHistoryService:SetWaypoint("Create Web Folder")
+	stop_recording(Enum.FinishRecordingOperation.Commit)
 	ON_WEB_SELECTED(folder)
 	Selection:Set({ folder })
 end)
 
-do
-	local last_selected_web = CollectionService:GetTagged(LAST_SELECTED_WEB_TAG)[1]
+do -- web handling
+
+	local last_selected_webs = CollectionService:GetTagged(LAST_SELECTED_WEB_TAG)
+	local last_selected_web = last_selected_webs[1]
 
 	if last_selected_web then
 		CURRENT_WEB_FOLDER = last_selected_web :: Folder
@@ -322,7 +286,7 @@ do
 
 	local function on_web_added(instance: Instance): boolean
 		if not instance:IsA("Folder") then
-			warn("")
+			warn("[NODETTE]: Cannot add", instance, "as a Web Folder because it is not a 'Folder'")
 			return false
 		end
 		local old_name = instance.Name
@@ -353,7 +317,7 @@ do
 		SHOULD_RECOMPUTE_WEBS_MENU = true
 	end)
 
-	for _, instance in CollectionService:GetTagged(LAST_SELECTED_WEB_TAG) do
+	for _, instance in last_selected_webs do
 		on_last_selected_web_added(instance)
 	end
 
@@ -362,26 +326,6 @@ do
 	end
 	SHOULD_RECOMPUTE_WEBS_MENU = true
 
-	local screen_gui = Instance.new("ScreenGui")
-	screen_gui.DisplayOrder = -math.huge
-	screen_gui.ZIndexBehavior = Enum.ZIndexBehavior.Global
-	screen_gui.Name = plugtilly.name(plugin)
-	screen_gui.Parent = CoreGui
-
-	MOUSE_TRACKING_OBJECT = Instance.new("Frame")
-	MOUSE_TRACKING_OBJECT.Name = "MouseTrackingGuiObject"
-	MOUSE_TRACKING_OBJECT.Size = UDim2.fromScale(1, 1)
-	MOUSE_TRACKING_OBJECT.Transparency = 1
-	MOUSE_TRACKING_OBJECT.Active = false
-	MOUSE_TRACKING_OBJECT.Parent = screen_gui
-	MOUSE_TRACKING_OBJECT.ZIndex = -math.huge
-
-	Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
-		CAMERA = Workspace.CurrentCamera
-	end)
-	plugin.Unloading:Connect(function()
-		screen_gui:Destroy()
-	end)
-
 	is_interacting_with_ribbon_tools(plugin)
+
 end
