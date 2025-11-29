@@ -18,6 +18,21 @@ export type DockWidgetPluginGuiInfo = {
 	title: string?,
 }
 
+export type ToggledCallback = (toggled: boolean, is_from_click: true?) -> ()
+
+type PluginToggleButtonPrototype = {
+	on_click: (plugin_toggle_button: PluginToggleButton, f: () -> ()) -> RBXScriptConnection,
+	on_toggle: (plugin_toggle_button: PluginToggleButton, f: ToggledCallback) -> (() -> ()),
+	toggle: (plugin_toggle_button: PluginToggleButton, new_state: boolean) -> (),
+	__index: PluginToggleButtonPrototype
+}
+
+export type PluginToggleButton = setmetatable<{
+	read callbacks: { ToggledCallback },
+	read instance: PluginToolbarButton,
+	toggled: boolean,
+}, PluginToggleButtonPrototype>
+
 export type PluginInterfaceInfo = {
 	clickable_when_viewport_hidden: boolean?,
 	enabled: boolean?,
@@ -37,27 +52,41 @@ export type PluginInterfaceActionInfo = PluginInterfaceInfo & {
 
 export type Setting<V> = (value: V?) -> V
 
-type PluginButton = {
-	on_trigger: (plugin_button: PluginButton, f: () -> ()) -> (() -> ()),
-	set_enabled: (plugin_button: PluginButton, enabled: boolean) -> (),
-	set_active: (plugin_button: PluginButton, active: boolean) -> (),
-	is_enabled: (plugin_button: PluginButton) -> boolean,
-	destroy: (plugin_button: PluginButton) -> (),
-	read button: PluginToolbarButton,
-}
+local function SWAP_REMOVE<V>(t: { V }, v: V)
+	local index = table.find(t, v)
 
-export type PluginMenuButton = PluginButton & {
-	add_seperator: (plugin_menu_button: PluginMenuButton, plugin_action: PluginAction | PluginActionButton) -> PluginMenuButton,
-	add_new_action: (plugin_menu_button: PluginMenuButton, id: string, icon: Content, title: string?) -> PluginAction,
-	add_action: ((plugin_menu_button: PluginMenuButton, plugin_action: PluginAction) -> PluginAction) &
-		((plugin_menu_button: PluginMenuButton, plugin_action_button: PluginActionButton) -> PluginActionButton),
-	add_menu: (plugin_menu_button: PluginMenuButton, plugin_menu: PluginMenuButton | PluginMenu) -> PluginMenu,
-	show_async: (plugin_menu_button: PluginMenuButton) -> PluginAction,
-	destroy: (plugin_menu_button: PluginMenuButton) -> (),
-	read menu: PluginMenu,
-}
+	if index then
+		if index ~= #t then
+			t[index] = t[#t]
+		end
+		t[#t] = nil
+	end
+end
 
-export type PluginMenuActionButton = PluginActionButton & PluginMenuButton
+local plugin_toggle_button_prototype = {} :: PluginToggleButtonPrototype
+plugin_toggle_button_prototype.__index = plugin_toggle_button_prototype
+
+function plugin_toggle_button_prototype.toggle(plugin_toggle_button, new_state)
+	plugin_toggle_button.instance:SetActive(new_state)
+	plugin_toggle_button.toggled = new_state
+
+	for _, f in plugin_toggle_button.callbacks do
+		f(new_state)
+	end
+end
+
+function plugin_toggle_button_prototype.on_toggle(plugin_toggle_button, f)
+	local callbacks = plugin_toggle_button.callbacks
+	table.insert(callbacks, f)
+
+	return function()
+		SWAP_REMOVE(callbacks, f)
+	end
+end
+
+function plugin_toggle_button_prototype.on_click(plugin_toggle_button, f)
+	return plugin_toggle_button.instance.Click:Connect(f)
+end
 
 local function UNPACK_INTERFACE_INFO(info: PluginInterfaceInfo): (string, string, string, string, boolean)
 	local enabled = info.enabled
@@ -99,115 +128,6 @@ local function GET_NAME(plugin: Plugin): string
 
 	return (string.gsub(name, "%-", " "))
 end
-
-local plugin_button_prototype = {} :: PluginButton
-(plugin_button_prototype :: any).__index = plugin_button_prototype
-
-function plugin_button_prototype.set_enabled(plugin_button, enabled)
-	plugin_button.button.Enabled = enabled
-end
-
-function plugin_button_prototype.set_active(plugin_button, active)
-	plugin_button.button:SetActive(active)
-end
-
-function plugin_button_prototype.on_trigger(plugin_button, f)
-	local connection = plugin_button.button.Click:Connect(f)
-
-	return function()
-		connection:Disconnect()
-	end
-end
-
-function plugin_button_prototype.is_enabled(plugin_button)
-	return plugin_button.button.Enabled
-end
-
-function plugin_button_prototype.destroy(plugin_button)
-	plugin_button.button:Destroy()
-end
-
-local plugin_action_button_prototype = setmetatable({}, plugin_button_prototype) :: PluginActionButton
-(plugin_action_button_prototype :: any).__index = plugin_action_button_prototype
-
-function plugin_action_button_prototype.on_trigger(plugin_action_button, f)
-	local button = plugin_action_button.button
-
-	local triggered_connection = plugin_action_button.action.Triggered:Connect(function()
-		if button.Enabled then
-			f()
-		end
-	end)
-	local click_connection = button.Click:Connect(f)
-
-	return function()
-		triggered_connection:Disconnect()
-		click_connection:Disconnect()
-	end
-end
-
-function plugin_action_button_prototype.destroy(plugin_action_button)
-	plugin_action_button.action:Destroy()
-	plugin_action_button.button:Destroy()
-end
-
-local plugin_menu_button_prototype = setmetatable({}, plugin_button_prototype) :: PluginMenuButton
-(plugin_menu_button_prototype :: any).__index = plugin_menu_button_prototype
-
-function plugin_menu_button_prototype.add_new_action(plugin_menu_button, id, icon, title)
-	return plugin_menu_button.menu:AddNewAction(id, title or id, if icon then icon.Uri :: any else nil)
-end
-
-function plugin_menu_button_prototype.add_action(
-	plugin_menu_button: PluginMenuButton, plugin_action: PluginAction | PluginActionButton
-)
-	if type(plugin_action) == "table" then
-		return plugin_menu_button.menu:AddAction(plugin_action.action)
-	else
-		return plugin_menu_button.menu:AddAction(plugin_action :: any)
-	end
-end
-
-function plugin_menu_button_prototype.add_menu(plugin_menu_button, plugin_menu)
-	if type(plugin_menu) == "table" then
-		plugin_menu_button.menu:AddMenu(plugin_menu.menu)
-		return plugin_menu.menu
-	else
-		plugin_menu_button.menu:AddMenu(plugin_menu)
-		return plugin_menu
-	end
-end
-
-function plugin_menu_button_prototype.add_seperator(plugin_menu_button)
-	plugin_menu_button.menu:AddSeparator()
-	return plugin_menu_button
-end
-
-function plugin_menu_button_prototype.show_async(plugin_menu_button)
-	return plugin_menu_button.menu:ShowAsync()
-end
-
-function plugin_menu_button_prototype.destroy(plugin_menu_button)
-	plugin_menu_button.button:Destroy()
-	plugin_menu_button.menu:Destroy()
-end
-
-local plugin_menu_action_button_prototype = setmetatable(
-	table.clone(plugin_action_button_prototype),
-	plugin_menu_button_prototype
-) :: any
-plugin_menu_action_button_prototype.__index = plugin_menu_action_button_prototype
-
-function plugin_menu_action_button_prototype.destroy(plugin_menu_action_button)
-	plugin_menu_action_button.action:Destroy()
-	plugin_menu_action_button.button:Destroy()
-	plugin_menu_action_button.menu:Destroy()
-end
-
-table.freeze(plugin_menu_action_button_prototype :: any)
-table.freeze(plugin_action_button_prototype :: any)
-table.freeze(plugin_menu_button_prototype :: any)
-table.freeze(plugin_button_prototype)
 
 local plugtilly = {
 	name = GET_NAME,
@@ -317,17 +237,34 @@ function plugtilly.setting<V>(plugin: Plugin, key: string, default: V): Setting<
 	end
 end
 
-function plugtilly.create_menu_action_button(
-	plugin: Plugin, toolbar: PluginToolbar, info: PluginInterfaceActionInfo
-): PluginMenuActionButton
+function plugtilly.create_toolbar_toggle_button(
+	plugin: Plugin, toolbar: PluginToolbar, info: PluginInterfaceActionInfo & { toggled: boolean? }
+): PluginToggleButton
 	local id, tooltip, icon, name, enabled = UNPACK_INTERFACE_INFO(info)
-	local button = CREATE_TOOLBAR_BUTTON(toolbar, id, tooltip, icon, name, enabled, info)
-	local menu = plugin:CreatePluginMenu(id, name, icon)
+	local toolbar_button = CREATE_TOOLBAR_BUTTON(toolbar, id, tooltip, icon, name, enabled, info)
+	local callbacks = {} :: { ToggledCallback }
+	local toggled = info.toggled or false
+	local toggle_button = setmetatable({
+		instance = toolbar_button,
+		callbacks = callbacks,
+		toggled = toggled,
+	}, plugin_toggle_button_prototype)
 
-	return table.freeze(setmetatable({
-		button = button,
-		menu = menu,
-	}, plugin_menu_action_button_prototype)) :: any
+	toolbar_button.Click:Connect(function()
+		local toggled = not toggle_button.toggled
+		toolbar_button:SetActive(toggled)
+		toggle_button.toggled = toggled
+
+		for _, f in callbacks do
+			f(toggled, true)
+		end
+	end)
+
+	if toggled then
+		toolbar_button:SetActive(true)
+	end
+
+	return toggle_button
 end
 
 function plugtilly.create_toolbar_button(
